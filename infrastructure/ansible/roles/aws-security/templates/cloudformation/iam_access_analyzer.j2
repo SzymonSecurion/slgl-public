@@ -1,0 +1,12 @@
+#jinja2: trim_blocks:False
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  IamAccessAnalyzer:
+    Type: 'AWS::AccessAnalyzer::Analyzer'
+    Properties:
+      AnalyzerName: !Sub ${AWS::StackName}
+      Type: ACCOUNT
+      {%- if iam_access_analyzer_enabled.rules is defined %}
+      ArchiveRules:
+        {{ iam_access_analyzer_enabled.rules | to_nice_yaml |indent(width=8) }}
+      {%- endif %}

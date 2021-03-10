@@ -1,0 +1,396 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >-
+  Setup Template for CI/CD
+
+Parameters:
+  PipelineName:
+    Description: A name for pipeline
+    Type: String
+    Default: "setup-ci-infrastructure"
+  SLGLStackName:
+    Default: 'slgl-ci-setup'
+    Description: A name for the test SLGL stack
+    Type: String
+  RepositoryName:
+    Default: 'slgl-cd-infra'
+    Description: A name for CodeCommit repository name
+    Type: String
+  RepositoryBranch:
+    Default: 'aws-infra'
+    Description: Branch that triggers dlow for CodeCommit repository name
+    Type: String
+Resources:
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+  AmazonCloudWatchEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref RepositoryBranch
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: codepipeline-AppPipeline
+  AmazonCloudWatchEventRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'codepipeline:StartPipelineExecution'
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref 'ArtifactStoreBucket'
+        Type: S3
+      DisableInboundStageTransitions: []
+      Name: !Ref 'PipelineName'
+      RoleArn: !GetAtt PipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              InputArtifacts: []
+              ActionTypeId:
+                Version: '1'
+                Provider: CodeCommit
+                Category: Source
+                Owner: AWS
+              OutputArtifacts:
+                - Name: !Sub '${SLGLStackName}-SourceArtifact'
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: !Ref RepositoryBranch
+                PollForSourceChanges: false
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Sub '${SLGLStackName}-CodeBuild'
+              InputArtifacts:
+                - Name: !Sub '${SLGLStackName}-SourceArtifact'
+              Name: PackageExport
+              OutputArtifacts:
+                - Name: !Sub '${SLGLStackName}-BuildArtifact'
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: DeployCIInfrastructure
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: !Sub '${SLGLStackName}-BuildArtifact'
+              Configuration:
+                ActionMode: REPLACE_ON_FAILURE
+                RoleArn: !GetAtt CFNRole.Arn
+                StackName: sigia-ledger-ci
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+                TemplatePath: !Sub '${SLGLStackName}-BuildArtifact::infrastructure/deploy/deployment_pipeline_generated.yml'
+              RunOrder: 1
+            - Name: DeployAWSSecurityPipeline
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: !Sub '${SLGLStackName}-BuildArtifact'
+              Configuration:
+                ActionMode: REPLACE_ON_FAILURE
+                RoleArn: !GetAtt CFNRole.Arn
+                StackName: aws-security-pipeline
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+                TemplatePath: !Sub '${SLGLStackName}-BuildArtifact::infrastructure/deployment/aws_security_pipeline.yml'
+              RunOrder: 1
+  PermissionsBoundaryPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Description: >-
+        IAM policy to define the permissions boundary for IAM entities created
+        in an SLGL project
+      ManagedPolicyName: !Sub 'SLGL_${SLGLStackName}_PermissionsBoundary'
+      PolicyDocument:
+        Statement:
+          - Action:
+              - '*'
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${SLGLStackName}/*'
+              - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${SLGLStackName}-CodeBuild'
+              - !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactStoreBucket}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactStoreBucket}/*'
+            Sid: 1
+          - Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey'
+            Effect: Allow
+            Resource:
+              - !Sub >-
+                arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+            Sid: 2
+          - Action:
+              - 'iam:PassRole'
+            Effect: Allow
+            Resource:
+              - !GetAtt CFNRole.Arn
+            Sid: 3
+          - Action:
+              - 'cloudtrail:CreateTrail'
+              - 'cloudtrail:StartLogging'
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:DescribeLogGroups'
+              - 'logs:PutLogEvents'
+              - 'iam:ListPolicyVersions'
+              - 'iam:CreatePolicyVersion'
+              - 'iam:GetPolicy'
+              - 'sns:Get*'
+              - 'sns:List*'
+              - 'sns:Publish'
+              - 'sns:Subscribe'
+              - 'xray:Put*'
+            Effect: Allow
+            Resource: '*'
+            Sid: 4
+        Version: 2012-10-17
+  ToolChainRole:
+    Properties:
+      Description: Creating toolchain role in IAM for Amazon EC2 instances
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+                - codedeploy.amazonaws.com
+                - codepipeline.amazonaws.com
+                - events.amazonaws.com
+                - lambda.amazonaws.com
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeBuildAdminAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeDeployFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodePipelineFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSLambdaFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/CloudWatchEventsFullAccess'
+      Path: /
+      PermissionsBoundary: !Ref PermissionsBoundaryPolicy
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - 'kms:GenerateDataKey*'
+                  - 'kms:Encrypt'
+                  - 'kms:Decrypt'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - 's3:PutObject'
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactStoreBucket}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactStoreBucket}/*'
+          PolicyName: ToolChainWorkerPolicy
+      RoleName: !Sub 'SLGL-${SLGLStackName}-ToolChain-Role'
+    Type: 'AWS::IAM::Role'
+  CodeBuildProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Artifacts:
+        Packaging: ZIP
+        Type: CODEPIPELINE
+      Description: "CodeBuild Project for SLGL"
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: S3_BUCKET
+            Value: !Ref ArtifactStoreBucket
+          - Name: PROJECT_ID
+            Value: !Sub "${SLGLStackName}"
+          - Name: ACCOUNT_ID
+            Value: !Ref 'AWS::AccountId'
+          - Name: PARTITION
+            Value: !Ref 'AWS::Partition'
+          - Name: ENVIRONMENT
+            Value: "beta"
+        Image: 'aws/codebuild/standard:2.0'
+        Type: LINUX_CONTAINER
+      Name: !Sub "${SLGLStackName}-CodeBuild"
+      ServiceRole: !Ref ToolChainRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: infrastructure/deploy/buildspec.yml
+  CFNRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CloudFormationRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'sns:*'
+                  - 'qldb:*'
+                  - 'dynamodb:*'
+                  - 'lambda:*'
+                  - 'events:*'
+                  - 'logs:*'
+                  - 'apigateway:*'
+                  - "iam:CreateRole"
+                  - "iam:DeleteRole"
+                  - "iam:PutRolePolicy"
+                  - "iam:DeleteRolePolicy"
+                  - "iam:AttachRolePolicy"
+                  - "iam:DetachRolePolicy"
+                  - "iam:GetRole"
+                  - "iam:GetRolePolicy"
+                  - "iam:ListPolicyVersions"
+                  - "iam:CreatePolicyVersion"
+                  - "iam:CreatePolicy"
+                  - "iam:DeletePolicyVersion"
+                  - "iam:DeletePolicy"
+                  - "iam:GetPolicy"
+                  - "s3:GetObject"
+                  - "s3:CreateBucket"
+                  - "s3:DeleteBucket"
+                  - "s3:PutBucketAcl"
+                  - "s3:PutBucketPolicy"
+                  - "s3:DeleteBucketPolicy"
+                  - 's3:PutBucketVersioning'
+                  - 'codedeploy:CreateApplication'
+                  - 'codedeploy:DeleteApplication'
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:CreateDeploymentGroup'
+                  - 'codedeploy:DeleteDeploymentGroup'
+                  - 'codebuild:CreateProject'
+                  - 'codebuild:DeleteProject'
+                  - 'codebuild:BatchGetProjects'
+                  - 'codebuild:UpdateProject'
+                  - 'codepipeline:GetPipeline'
+                  - 'codepipeline:ListPipelineExecutions'
+                  - 'codepipeline:ListActionExecutions'
+                  - 'codepipeline:CreatePipeline'
+                  - 'codepipeline:DeletePipeline'
+                  - 'codepipeline:GetPipelineState'
+                  - 'codepipeline:PutWebhook'
+                  - 'codepipeline:DeleteWebhook'
+                  - 'codepipeline:DeregisterWebhookWithThirdParty'
+                  - 'codepipeline:RegisterWebhookWithThirdParty'
+                  - 'codepipeline:UpdatePipeline'
+                  - 'kinesis:DescribeStreamConsumer'
+                  - 'chatbot:CreateSlackChannelConfiguration'
+                  - 'chatbot:UpdateSlackChannelConfiguration'
+                  - 'chatbot:DeleteSlackChannelConfiguration'
+                  - 'iam:CreateServiceLinkedRole'
+                  - 'iam:DeleteServiceLinkedRole'
+                  - 'codestar-notifications:CreateNotificationRule'
+                  - 'codestar-notifications:DeleteNotificationRule'
+                  - 'codestar-notifications:UpdateNotificationRule'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - 'cloudformation:CreateChangeSet'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31'
+              - Action:
+                  - 'iam:PassRole'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/*'
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codepipeline.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 's3:*'
+                  - 'cloudformation:CreateStack'
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DeleteStack'
+                  - 'cloudformation:UpdateStack'
+                  - 'cloudformation:CreateChangeSet'
+                  - 'cloudformation:ExecuteChangeSet'
+                  - 'cloudformation:DeleteChangeSet'
+                  - 'cloudformation:DescribeChangeSet'
+                  - 'cloudformation:SetStackPolicy'
+                  - 'iam:PassRole'
+                  - 'sns:Publish'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                Effect: Allow
+                Resource: !GetAtt CodeBuildProject.Arn
+              - Action:
+                  - 'codecommit:GetBranch'
+                  - 'codecommit:GetCommit'
+                  - 'codecommit:UploadArchive'
+                  - 'codecommit:GetUploadArchiveStatus'
+                Effect: Allow
+                Resource: !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}
+
+

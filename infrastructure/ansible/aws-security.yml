@@ -1,0 +1,26 @@
+---
+# Playbook for dev1 AWS account
+#  - name: Setup CloudTrail via CloudFormation
+#    hosts: local
+#    connection: local
+#    gather_facts: true
+#    vars:
+#      cloudtrail_destination_bucket: "securion-audit-cloudtrail"
+#      aws_alias: "{{ env }}"
+#    tags:
+#      - cloudtrail
+#      - skip
+#    roles:
+#      - cloudtrail
+
+  - name: Setup AWS Security services
+    hosts: local
+    connection: local
+    gather_facts: true
+    vars:
+      master: true
+    tags:
+      - aws-security
+      - skip
+    roles:
+      - aws-security

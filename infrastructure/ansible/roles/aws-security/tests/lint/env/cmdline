@@ -1,0 +1,1 @@
+-i local, --tags generate_cloudformation_security_templates --skip-tags always

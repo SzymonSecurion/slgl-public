@@ -1,0 +1,243 @@
+---
+#  - name: Get the current caller identity information
+#    aws_caller_facts:
+#    register: aws_caller_info
+#    when: aws_master_account_id is not defined
+#    tags: debug
+#
+#  - name: Set Master AWS accout ID
+#    set_fact:
+#      aws_master_account_id: "{{ aws_caller_info.account }}"
+#    when: aws_master_account_id is not defined
+#    tags: debug
+#
+#  - debug:
+#      msg: "{{ aws_master_account_id }}"
+#    tags: debug
+#
+#  - name: Ensure CloudFormation generated directory exists
+#    file:
+#      path: "{{ playbook_dir }}/roles/aws-security/templates/generated/{{ item.account_id }}/"
+#      state: "directory"
+#    with_items:
+#      - "{{ iam_access_analyzer_enabled }}"
+#    tags:
+#      - generate_cloudformation_security_templates
+#
+#  - name: Generate CloudFormation AWS IAM Access Analyzer
+#    local_action:
+#      module: template
+#      src: "cloudformation_iam_access_analyzer.j2"
+#      dest: "{{ playbook_dir }}/roles/aws-security/templates/generated/{{ item.account_id }}/iam_access_analyzer.j2"
+#    tags:
+#      - generate_template
+#      - generate_cloudformation_security_templates
+#      - cloudformation
+#      - master
+#      - setup
+#    with_items:
+#      - "{{ iam_access_analyzer_enabled }}"
+
+  - name: Generate CloudFormation AWS Security templates # Task name used in tests
+    template:
+      src: "{{ item }}"
+      dest: "{{ playbook_dir }}/../deployment/{{ (item | basename | splitext)[0] }}.yml"
+    tags:
+      - generate_template
+      - debug1
+      - generate_cloudformation_security_templates
+      - cloudformation
+      - master
+      - setup
+    with_fileglob:
+     - "../templates/cloudformation/*.j2"
+
+  - name: Register files attributes
+    stat:
+      path: "{{ item }}"
+      checksum_algorithm: md5
+    tags:
+      - cloudformation
+      - master
+      - setup
+      - iam-access-analyzer
+      - aws-config
+      - guard-duty
+      - security-hub
+    register: file_stats
+    with_fileglob:
+     - "../templates/generated/*.yml"
+     - "../templates/generated/{{ aws_account_id | string }}/*.yml"
+
+  - name: Upload CloudFormation templates to S3 bucket
+    local_action:
+      module: aws_s3
+      region: "{{ region }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      bucket: "{{ template_bucket }}"
+      object: "cloudformation/{{ aws_account_id|string + '/' + (item.stat.path | basename | splitext)[0] + '_' + item.stat.checksum + '.yml' }}"
+      src: "{{ item.stat.path }}"
+      mode: put
+    register: uploadtemplate
+    tags:
+      - cloudformation
+      - master
+      - setup
+      - iam-access-analyzer
+      - aws-config
+      - guard-duty
+      - security-hub
+    with_items:
+      - "{{file_stats.results }}"
+
+  - name: Get Uploaded urls
+    set_fact:
+      uploaded_urls: "{{ uploadtemplate|json_query('results[*].url') }}"
+    tags:
+      - cloudformation
+      - master
+      - setup
+      - iam-access-analyzer
+      - aws-config
+      - guard-duty
+      - security-hub
+
+  - name: Set Uploaded url variables
+    set_fact:
+      config_cloudformation_url: "{% for item in uploaded_urls %}{% if '/config_' in item %}{{item.split('?')[0]}}{% endif %}{% endfor %}"
+      guard_duty_master_cloudformation_url: "{% for item in uploaded_urls %}{% if '/guard_duty_master_' in item %}{{item.split('?')[0]}}{% endif %}{% endfor %}"
+      guard_duty_member_cloudformation_url: "{% for item in uploaded_urls %}{% if '/guard_duty_member_' in item %}{{item.split('?')[0]}}{% endif %}{% endfor %}"
+      iam_access_analyzer_cloudformation_url: "{% for item in uploaded_urls %}{% if '/iam_access_analyzer_' in item %}{{item.split('?')[0]}}{% endif %}{% endfor %}"
+      security_hub_master_cloudformation_url: "{% for item in uploaded_urls %}{% if '/securityhub_master_' in item %}{{item.split('?')[0]}}{% endif %}{% endfor %}"
+      security_hub_member_cloudformation_url: "{% for item in uploaded_urls %}{% if '/securityhub_member_' in item %}{{item.split('?')[0]}}{% endif %}{% endfor %}"
+    tags:
+      - cloudformation
+      - master
+      - setup
+      - iam-access-analyzer
+      - aws-config
+      - guard-duty
+      - security-hub
+
+  - name: Launch/Modify AWS config via CloudFomation
+    local_action:
+      module: cloudformation
+      stack_name: "aws-config"
+      state: "present"
+      region: "{{ item }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      disable_rollback: false
+      template_url: "{{ config_cloudformation_url }}"
+      template_parameters:
+        MasterAccountId: "{{ aws_master_account_id }}"
+      tags:
+        Stack: "aws-config"
+    with_items:
+      - "{{ region }}"
+      - "{{ aws_config_supported_regions }}"
+    tags:
+      - aws-config
+
+  - name: Launch/Modify IAM Access Analyzer via CloudFomation
+    local_action:
+      module: cloudformation
+      stack_name: "iam-access-analyzer"
+      state: "present"
+      region: "{{ item }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      disable_rollback: false
+      template_url: "{{ iam_access_analyzer_cloudformation_url }}"
+      tags:
+        Stack: "iam-access-analyzer"
+    with_items:
+      - "{{ iam_access_analyzer_supported_regions }}"
+    tags:
+      - iam-access-analyzer
+
+  - name: Launch/Modify GuardDuty Master via CloudFomation
+    local_action:
+      module: cloudformation
+      stack_name: "guard-duty-master"
+      state: "present"
+      region: "{{ item }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      disable_rollback: false
+      template_url: "{{ guard_duty_master_cloudformation_url }}"
+      tags:
+        Stack: "guard-duty-master"
+    when: master is defined and master
+    register: cloudformation_guard_duty_master
+    with_items: "{{ aws_guard_duty_supported_regions }}"
+    tags:
+      - guard-duty
+
+  - name: Launch/Modify GuardDuty member via CloudFomation
+    local_action:
+      module: cloudformation
+      stack_name: "guard-duty-member"
+      state: "present"
+      region: "{{ item }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      disable_rollback: false
+      template_url: "{{ guard_duty_member_cloudformation_url }}"
+      template_parameters:
+        MasterAccountId: "{{ aws_master_account_id }}"
+      tags:
+        Stack: "guard-duty-member"
+    register: cloudformation_guard_duty_member
+    when: master is not defined and not master
+    with_items: "{{ aws_guard_duty_supported_regions }}"
+    tags:
+      - guard-duty
+
+  - name: Launch/Modify SecurityHub Master via CloudFomation
+    local_action:
+      module: cloudformation
+      stack_name: "securityhub-master"
+      state: "present"
+      region: "{{ item }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      disable_rollback: false
+      template_url: "{{ security_hub_master_cloudformation_url }}"
+      template_parameters:
+        IncomingWebHookURL: "{{ security_hub_slack_webhook_url }}"
+      tags:
+        Stack: "securityhub-master"
+    when: master is defined and master
+    register: cloudformation_securityhub_master
+    with_items: "{{ aws_security_hub_supported_regions }}"
+    tags:
+      - security-hub
+
+  - name: Launch/Modify SecurityHub Member via CloudFomation
+    local_action:
+      module: cloudformation
+      stack_name: "securityhub-member"
+      state: "present"
+      region: "{{ item }}"
+      aws_access_key: "{{ sts.access_key }}"
+      aws_secret_key: "{{ sts.secret_key }}"
+      security_token: "{{ sts.session_token }}"
+      disable_rollback: false
+      template_url: "{{ security_hub_member_cloudformation_url }}"
+      template_parameters:
+        MasterAccountId: "{{ aws_master_account_id }}"
+      tags:
+        Stack: "securityhub-member"
+    when: master is not defined and not master
+    register: cloudformation_securityhub_member
+    with_items: "{{ aws_security_hub_supported_regions }}"
+    tags:
+      - security-hub

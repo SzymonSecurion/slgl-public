@@ -1,0 +1,12 @@
+#jinja2: trim_blocks:False
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: True
+      FindingPublishingFrequency: FIFTEEN_MINUTES
+Outputs:
+  GuardDutyDetectorId:
+    Description: Guard Detector ID
+    Value: !Ref GuardDutyDetector

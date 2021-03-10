@@ -1,0 +1,97 @@
+---
+# defaults variables for aws-security
+aws_config_supported_regions:
+  - us-east-2
+  - us-east-1
+  - us-west-1
+  - us-west-2
+  - ca-central-1
+  - ap-south-1
+  - ap-northeast-2
+  - ap-southeast-1
+  - ap-southeast-2
+  - ap-northeast-1
+  #  - ap-east-1 # Region not configured
+  #  - cn-north-1 # Region not configured
+  #  - cn-northwest-1 # Region not configured
+  - eu-central-1
+  #  - eu-north-1 # Region not supported
+  - eu-west-1
+  - eu-west-2
+  - eu-west-3
+  - sa-east-1
+aws_guard_duty_supported_regions:
+  - us-east-2
+  - us-east-1
+  - us-west-1
+  - us-west-2
+  - ca-central-1
+  - ap-south-1
+  - ap-northeast-2
+  - ap-southeast-1
+  - ap-southeast-2
+  - ap-northeast-1
+  #  - ap-east-1 # Region not enabled
+  - eu-central-1
+  - eu-west-1
+  - eu-west-2
+  - eu-west-3
+#  - eu-north-1 # Region not supported by stack-sets
+  - sa-east-1
+aws_security_hub_supported_regions:
+  - us-east-2
+  - us-east-1
+  - us-west-1
+  - us-west-2
+  - ca-central-1
+  - ap-south-1
+  - ap-northeast-2
+  - ap-southeast-1
+  - ap-southeast-2
+  - ap-northeast-1
+  # - ap-east-1 # Region not enabled
+  - eu-central-1
+  - eu-west-1
+  - eu-west-2
+  - eu-west-3
+#  - eu-north-1 # Region not supported by stack-sets
+  - sa-east-1
+iam_access_analyzer_supported_regions:
+  - us-east-2
+  - us-east-1
+  - us-west-1
+  - us-west-2
+  - ca-central-1
+  - ap-south-1
+  - ap-southeast-1
+  - ap-southeast-2
+  - ap-northeast-1
+  - ap-northeast-2
+  # - ap-northeast-3    # Region not enabled
+  # - ap-east-1         # Region not enabled
+  - eu-central-1
+  - eu-west-1
+  - eu-west-2
+  - eu-west-3
+#  - eu-north-1 # Region not supported by stack-sets
+  - sa-east-1
+  # - me-south-1        # Region not enabled
+  # - cn-north-1        # Region not enabled
+  # - cn-northwest-1    # Region not enabled
+iam_access_analyzer_enabled:
+  rules:
+    - RuleName: ArchiveTrustedAccountAccess
+      Filter:
+        - Property: 'principal.AWS'
+          Eq:
+            - 'arn:aws:iam::181980779426:role/jenkins_slaves'
+            - 'arn:aws:iam::174706592265:user/szymon.swiecki'
+            - 'arn:aws:iam::181980779426:user/szymon.swiecki'
+        - Property: 'resource'
+          Contains:
+            - 'arn:aws:s3:::securionpay-releases'
+    - RuleName: ArchivePublicS3BucketsAccess
+      Filter:
+        - Property: 'resource'
+          Contains:
+            - 'arn:aws:s3:::securionpay-bs-*-public'

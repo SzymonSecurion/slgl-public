@@ -1,0 +1,26 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.7
+    commands:
+      # Upgrade AWS CLI to the latest version
+      - pip install --upgrade awscli
+      - pip install --user aws-sam-cli
+      - pip install cfn-lint
+      - USER_BASE_PATH=$(python -m site --user-base)
+      - export PATH=$PATH:$USER_BASE_PATH/bin
+  pre_build:
+    commands:
+      - echo Tests started on `date`
+  build:
+    commands:
+      - cd infrastructure/deploy/
+      - sam build --template deployment_pipeline.yaml
+      - sam package --s3-bucket $S3_BUCKET --output-template-file deployment_pipeline_generated.yml
+      - cfn-lint -t deployment_pipeline_generated.yml
+artifacts:
+  files:
+    - infrastructure/deploy/deployment_pipeline_generated.yml
+    - infrastructure/deployment/aws_security_pipeline.yml
